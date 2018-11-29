@@ -1,0 +1,232 @@
+---
+title: "An example of PureCN output"
+author: Sehyun Oh
+date: "November 29, 2018"
+output:
+  BiocStyle::html_document:
+    number_sections: yes
+    toc: true
+vignette: >
+  %\VignetteIndexEntry{Analysis and Resources of Multi-Assay Experiments}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r echo=FALSE, eval=FALSE}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("PureCN")
+```
+
+# Example inputs/intermediates
+You can check the file formats here.
+```{r message=FALSE, warning=FALSE}
+library(PureCN)
+```
+
+## Target information
+```{r}
+reference.file <- system.file("extdata", "ex2_reference.fa",
+    package = "PureCN", mustWork = TRUE)
+bed.file <- system.file("extdata", "ex2_intervals.bed",
+        package = "PureCN", mustWork = TRUE)
+mappability.file <- system.file("extdata", "ex2_mappability.bigWig",
+        package = "PureCN", mustWork = TRUE)
+intervals <- import(bed.file)
+mappability <- import(mappability.file)
+
+# Interval.R
+interval.file <- preprocessIntervals(intervals, reference.file,
+    mappability=mappability, output.file = "ex2_gc_file.txt")
+```
+
+## Coverage data
+```{r}
+bam.file <- system.file("extdata", "ex1.bam", package="PureCN",
+    mustWork = TRUE)
+interval.file <- system.file("extdata", "ex1_intervals.txt",
+    package = "PureCN", mustWork = TRUE)
+
+# Coverage.R
+calculateBamCoverageByInterval(bam.file = bam.file,
+ interval.file = interval.file, output.file = "ex1_coverage.txt")
+```
+
+## Library-specific coverage bias
+```{r}
+normal.coverage.file <- system.file("extdata", "example_normal.txt",
+    package="PureCN")
+normal2.coverage.file <- system.file("extdata", "example_normal2.txt",
+    package="PureCN")
+normal.coverage.files <- c(normal.coverage.file, normal2.coverage.file)
+tumor.coverage.file <- system.file("extdata", "example_tumor.txt",
+    package="PureCN")
+seg.file <- system.file("extdata", "example_seg.txt",
+    package = "PureCN")
+vcf.file <- system.file("extdata", "example.vcf.gz", package="PureCN")
+interval.file <- system.file("extdata", "example_intervals.txt",
+    package="PureCN")
+```
+
+```{r}
+# Coverage.R
+correctCoverageBias(normal.coverage.file, interval.file,
+    output.file="example_normal_loess.txt", plot.bias=FALSE)
+```
+
+## PON
+```{r}
+# NormalDB.R
+normalDB <- createNormalDatabase(normal.coverage.files)
+saveRDS(normalDB, file="normalDB.rds")
+
+normalDB <- readRDS("normalDB.rds")
+pool <- calculateTangentNormal(tumor.coverage.file, normalDB)
+```
+
+## VCF
+```{r}
+# NormalDB.R and PureCN.R
+normal.panel.vcf.file <- system.file("extdata", "normalpanel.vcf.gz",
+                                     package="PureCN")
+bias <- calculateMappingBiasVcf(normal.panel.vcf.file, genome = "h19")
+
+saveRDS(bias, "mapping_bias.rds")
+normal.panel.vcf.file <- "mapping_bias.rds"
+```
+
+## Coverage data
+```{r}
+# NOrmalDB.R
+interval.weight.file <- "interval_weights.txt"
+calculateIntervalWeights(normalDB$normal.coverage.files, interval.weight.file)
+```
+
+## Recommended run
+```{r}
+# PureCN.R
+ret <-runAbsoluteCN(normal.coverage.file=pool, # normal.coverage.file=normal.coverage.file,
+    tumor.coverage.file=tumor.coverage.file, vcf.file=vcf.file,
+    genome="hg19", sampleid="Sample1",
+    interval.file=interval.file, normalDB=normalDB,
+# args.setMappingBiasVcf=list(normal.panel.vcf.file=normal.panel.vcf.file),
+# args.filterVcf=list(snp.blacklist=snp.blacklist,
+# stats.file=mutect.stats.file),
+    args.segmentation=list(interval.weight.file=interval.weight.file),
+    post.optimize=FALSE, plot.cnv=FALSE, verbose=FALSE)
+```
+
+```{r}
+file.rds <- "Sample1_PureCN.rds"
+saveRDS(ret, file=file.rds)
+```
+
+# Output data structures
+
+The R data file (`file.rds`) contains gene-level copy number calls, SNV status and LOH calls. The purity/ploidy combinations are sorted by likelihood and stored in `ret$results`.
+
+```{r data_structure}
+names(ret)
+```
+
+***
+## Prediction of somatic status and cellular fraction
+To understand allelic fractions of particular SNVs, we must know the (i) somatic status, the (ii) tumor purity, the (iii) local copy number, as well as the (iv) number of chromosomes harboring the mutations or SNPs. One of PureCN main functions is to find the most likely combination of these four values. We further assign posterior probabilities to all possible combinations or states. Availability of matched normals reduces the search space by already providing somatic status.
+
+The predictSomatic function provides access to these probabilities. For predicted somatic mutations, this function also provides cellular fraction estimates, i.e. the fraction of tumor cells with mutation. Fractions significantly below 1 indicate sub-clonality
+
+```{r}
+head(predictSomatic(ret), 3)
+```
+
+```{r predictSomatic, echo = FALSE, out.width="\\maxwidth"}
+knitr::include_graphics("predictSomatic.png")
+```
+
+***
+## Amplifications and deletions
+
+```{r}
+gene.calls <- callAlterations(ret)
+head(gene.calls)
+```
+
+```{r callAlterations, echo = FALSE, out.width="\\maxwidth"}
+knitr::include_graphics("callAlterations.png")
+```
+
+***
+## Find genomic regions in LOH
+The `gene.calls` data.frame described above provides gene-level LOH information. To find the corresponding genomic regions in LOH, we can use the `callLOH` function:
+
+```{r}
+loh <- callLOH(ret)
+head(loh)
+```
+
+```{r callLOH, echo = FALSE, out.width="\\maxwidth"}
+knitr::include_graphics("callLOH.png")
+```
+
+***
+## Curation
+This will generate a CSV file in which the correct purity and ploidy values can be manually entered.
+```{r}
+createCurationFile(file.rds)
+read.csv("Sample1_PureCN.csv")
+```
+
+```{r createCurationFile, echo = FALSE, out.width="\\maxwidth"}
+knitr::include_graphics("createCurationFile.png")
+```
+
+***
+## Mutation burden
+The `predictSomatic` function can be used to efficiently remove private germline mutations. This in turn allows the calculation of mutation burden for un-matched tumor samples. A wrapper function for this specific task is included as `callMutationBurden`:
+
+```{r}
+callableBed <- import(system.file("extdata", "example_callable.bed.gz",
+    package = "PureCN"))
+```
+
+```{r}
+callMutationBurden(ret, callable=callableBed)
+```
+
+```{r callMutationBurden, echo = FALSE, out.width="\\maxwidth"}
+knitr::include_graphics("callMutationBurden.png")
+```
+
+# Plot
+
+## Overview
+This plot shows the purity and ploidy local optima, sorted by final likelihood score after fitting both copy number and allelic fractions.
+
+```{r overview, fig.height=5, fig.width=5}
+plotAbs(ret, type = "overview")
+```
+*The colors visualize the copy number fitting score from low (blue) to high (red). The numbers indicate the ranks of the local optima. Yellow fonts indicate that the corresponding solutions were flagged, which does not necessarily mean the solutions are wrong. The correct solution (number 1) of this toy example was flagged due to large amount of LOH.*
+
+
+***
+## Log-ratio histogram
+
+```{r log_ratio_hist, fig.height=5, fig.width=5}
+plotAbs(ret, 1, type = "hist")
+```
+*This figure displays a histogram of tumor vs. normal copy number log-ratios for the maximum likelihood solution (number 1 in Overview). The height of a bar in this plot is proportional to the fraction of the genome falling into the particular log-ratio copy number range. The vertical dotted lines and numbers visualize the, for the given purity/ploidy combination, expected log-ratios for all integer copy numbers from 0 to 7.* 
+
+***
+## B-Allele frequency plot
+This figure shows the allelic fractions of predicted germline SNPs. The goodness of fit (GoF) is provided on an arbitrary scale in which 100% corresponds to a perfect fit and 0% to the worst possible fit. The latter is defined as a fit in which allelic fractions on average differ by 0.2 from their expected fractions. Note that this does not take purity into account and low purity samples are expected to have a better fit. In the middle panel, the corresponding copy number log-ratios are shown. The lower panel displays the calculated integer copy numbers, corrected for purity and ploidy. We can zoom into particular chromosomes using `chr` argument.
+
+```{r BAF_plot, fig.height=8, fig.width=6}
+plotAbs(ret, 1, type="BAF")
+```
+
+*Each dot is a (predicted) germline SNP. The first panel shows the allelic fractions as provided in the VCF file. The alternating grey and white background colors visualize odd and even chromosome numbers, re- spectively. The black lines visualize the expected (not the average!) allelic fractions in the segment. These are calculated using the estimated purity and the total and minor segment copy numbers. These are vi- sualized in black and grey, respectively, in the second and third panel. The second panel shows the copy number log-ratios, the third panel the integer copy numbers.*
